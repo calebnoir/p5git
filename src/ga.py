@@ -28,6 +28,11 @@ options = [
 ]
 
 # The level as a grid of tiles
+def is_feasible(individual):
+    level = individual.to_level()
+    measurements = metrics.metrics(level)
+    return measurements['solvability'] == 1
+
 
 class Individual_Grid(object):
     __slots__ = ["genome", "_fitness"]
@@ -52,10 +57,11 @@ class Individual_Grid(object):
             linearity=-0.5,
             solvability=2.0
         )
-        self._fitness = sum(map(lambda m: coefficients[m] * measurements[m],
-                                coefficients))
+        fitness = sum(map(lambda m: coefficients[m] * measurements[m], coefficients))
+        if not is_feasible(self):
+            fitness -= 10  # Penalize infeasible levels
+        self._fitness = fitness
         return self
-
     # Return the cached fitness value or calculate it as needed.
     def fitness(self):
         if self._fitness is None:
@@ -507,35 +513,39 @@ def elitist_selection(population, elite_size):
 
 
 def ga():
-    # STUDENT Feel free to play with this parameter
     pop_limit = 480
-    # Code to parallelize some computations
+    feasible_pop = []
+    infeasible_pop = []
+
     batches = os.cpu_count()
     if pop_limit % batches != 0:
         print("It's ideal if pop_limit divides evenly into " + str(batches) + " batches.")
     batch_size = int(math.ceil(pop_limit / batches))
+
     with mpool.Pool(processes=os.cpu_count()) as pool:
         init_time = time.time()
-        # STUDENT (Optional) change population initialization
-        population = [Individual.random_individual() if random.random() < 1
-                      else Individual.empty_individual()
-                      for _g in range(pop_limit)]
-        # But leave this line alone; we have to reassign to population because we get a new population that has more cached stuff in it.
-        population = pool.map(Individual.calculate_fitness,
-                              population,
-                              batch_size)
+        # Initialize populations
+        for _ in range(pop_limit):
+            individual = Individual.random_individual()
+            if is_feasible(individual):
+                feasible_pop.append(individual)
+            else:
+                infeasible_pop.append(individual)
+        # Calculate fitness for both populations
+        feasible_pop = pool.map(Individual.calculate_fitness, feasible_pop, batch_size)
+        infeasible_pop = pool.map(Individual.calculate_fitness, infeasible_pop, batch_size)
         init_done = time.time()
         print("Created and calculated initial population statistics in:", init_done - init_time, "seconds")
+
         generation = 0
         start = time.time()
-        now = start
         print("Use ctrl-c to terminate this loop manually.")
         try:
             while True:
                 now = time.time()
-                # Print out statistics
+                # Print out statistics for feasible population
                 if generation > 0:
-                    best = max(population, key=Individual.fitness)
+                    best = max(feasible_pop, key=Individual.fitness)
                     print("Generation:", str(generation))
                     print("Max fitness:", str(best.fitness()))
                     print("Average generation time:", (now - start) / generation)
@@ -544,7 +554,7 @@ def ga():
                         for row in best.to_level():
                             f.write("".join(row) + "\n")
                 generation += 1
-                # STUDENT Determine stopping condition
+                # Determine stopping condition
                 stop_condition = False
 
                 if generation > 2:
@@ -552,21 +562,24 @@ def ga():
 
                 if stop_condition:
                     break
-                # STUDENT Also consider using FI-2POP as in the Sorenson & Pasquier paper
+                # Generate successors for both populations
                 gentime = time.time()
-                next_population = generate_successors(population)
+                next_feasible_pop = generate_successors(feasible_pop)
+                next_infeasible_pop = generate_successors(infeasible_pop)
                 gendone = time.time()
                 print("Generated successors in:", gendone - gentime, "seconds")
-                # Calculate fitness in batches in parallel
-                next_population = pool.map(Individual.calculate_fitness,
-                                           next_population,
-                                           batch_size)
+                # Calculate fitness in batches in parallel for both populations
+                next_feasible_pop = pool.map(Individual.calculate_fitness, next_feasible_pop, batch_size)
+                next_infeasible_pop = pool.map(Individual.calculate_fitness, next_infeasible_pop, batch_size)
                 popdone = time.time()
                 print("Calculated fitnesses in:", popdone - gendone, "seconds")
-                population = next_population
+                # Update populations
+                feasible_pop = next_feasible_pop
+                infeasible_pop = next_infeasible_pop
         except KeyboardInterrupt:
             pass
-    return population
+    return feasible_pop
+
 
 
 if __name__ == "__main__":
